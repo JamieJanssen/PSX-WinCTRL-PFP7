@@ -80,19 +80,19 @@ Supported PSX colors:
 
 Mapped automatically to the corresponding MobiFlight LCD colors.
 
+PSX sends compact color definitions per CDU row.
+
 Example:
 
-```text
 Qs530=mmmmmw
-```
 
-Results in:
+This means:
 
-```text
-MMMMMWWWWWWWWWWWWWWWWWWW
-```
+* Characters 1–5 use magenta
+* All remaining characters use white
 
-The final color continues for the remainder of the row.
+The color information is applied to the CDU text already displayed on that row. The text itself is not modified.
+
 
 ---
 

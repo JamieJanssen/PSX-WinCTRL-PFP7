@@ -233,7 +233,7 @@ Normally the MobiFlight path does not need to be configured because it is detect
 Run:
 
 ```bash
-python psx_pfp7_bridge.py
+python psx_pfp7.py
 ```
 
 Example startup:

@@ -113,13 +113,14 @@ Detected information:
 
 ### CDU Display Type
 
-* LCD CDU
-* CRT CDU
+* LCD CDU (color)
+* CRT CDU (green)
 
 ---
 
 ## ATC / ALTN Key Configuration
 
+The WINCTRL PFP7 has a ALTN key where the PFP4 (B747) FMC has an ATC key.
 The ATC key behavior can be configured in:
 
 ```ini

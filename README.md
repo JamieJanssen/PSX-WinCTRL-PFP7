@@ -1,71 +1,71 @@
 # PSX ↔ WinCTRL PFP7 Bridge
 
-A Python bridge that connects the **WinCTRL PFP7 CDU** to the **Aerowinx PSX Boeing 747 simulator**.
+A Python bridge that connects the WinCTRL PFP7 CDU to the Aerowinx PSX Boeing 747 simulator.
 
 The bridge provides:
 
 * PFP7 CDU keyboard input to PSX
 * PSX CDU display output to the Winwing/MobiFlight LCD
-* PSX CDU annunciator lights to PFP7 LEDs
-* Automatic support for Left, Center and Right CDU
-* Automatic NextGen FMC detection
-* Automatic CRT/LCD CDU detection
+* PSX CDU annunciator support
+* Automatic Left, Center and Right CDU switching
+* Automatic Next Generation / Legacy FMC detection
+* Automatic LCD / CRT CDU detection
 * Per-character LCD color support
 * Automatic MobiFlight detection and startup
+* Configurable ATC / ALTN key behavior
 
 ---
 
-## Features
+# Features
 
-### CDU Keyboard
+## CDU Keyboard
 
-All PFP7 CDU keys are mapped directly to the active PSX CDU.
+All supported PFP7 CDU keys are mapped directly to the active PSX CDU.
 
 Supported:
 
 * LSK keys
 * Alphanumeric keys
-* FMC function keys
-* CLR
 * EXEC
+* CLR
 * MENU
-* PREV / NEXT PAGE
-* BRT+ / BRT-
+* PREV PAGE
+* NEXT PAGE
+* BRT+
+* BRT-
 
-### CDU Switching
+---
 
-The active CDU can be selected from the scratchpad:
+## CDU Switching
 
-| Command | Function   |
-| ------- | ---------- |
-| CDU-L   | Left CDU   |
-| CDU-C   | Center CDU |
-| CDU-R   | Right CDU  |
+The active CDU can be selected directly from the scratchpad:
 
-The switch is immediate and does not require any CDU reload sequence.
+* CDU-L
+* CDU-C
+* CDU-R
+
+The bridge maintains a complete cache of all CDU screens and color information, allowing instant switching without requiring a PSX screen reload.
 
 ---
 
 ## LCD Display Support
 
-The bridge receives all CDU screen data from PSX and maintains a cache of:
+The bridge continuously caches:
 
-* Qs62 - Qs103 (all CDU screen lines)
-* Qs500 - Qs541 (all CDU color lines)
+* Qs62 – Qs103 (CDU screen data)
+* Qs500 – Qs541 (CDU color data)
 
-This allows instant switching between:
+This allows immediate display updates when switching between:
 
 * Left CDU
 * Center CDU
 * Right CDU
 
-without forcing a screen refresh in PSX.
-
 ---
 
 ## LCD Color Support
 
-Supported PSX colors:
+Supported PSX CDU colors:
 
 | PSX | Color   |
 | --- | ------- |
@@ -78,27 +78,13 @@ Supported PSX colors:
 | w   | White   |
 | y   | Grey    |
 
-Mapped automatically to the corresponding MobiFlight LCD colors.
-
-PSX sends compact color definitions per CDU row.
-
-Example:
-
-Qs530=mmmmmw
-
-This means:
-
-* Characters 1–5 use magenta
-* All remaining characters use white
-
-The color information is applied to the CDU text already displayed on that row. The text itself is not modified.
-
+Color definitions are received from PSX and applied per character on the MobiFlight LCD.
 
 ---
 
-## CDU Lights
+## CDU Annunciators
 
-The following PFP7 annunciators are supported:
+The bridge supports the CDU annunciator lights through PSX:
 
 * EXEC
 * DSPY
@@ -106,108 +92,109 @@ The following PFP7 annunciators are supported:
 * MSG
 * OFST
 
-Lights are driven directly from PSX:
+Data source:
 
-| CDU    | PSX Variable |
-| ------ | ------------ |
-| Left   | Qi86         |
-| Center | Qi87         |
-| Right  | Qi88         |
+* Qi86 (Left CDU)
+* Qi87 (Center CDU)
+* Qi88 (Right CDU)
 
 ---
 
-## Automatic FMC Detection
+## FMC Detection
 
-The bridge monitors:
+The bridge automatically evaluates Qi248.
 
-```text
-Qi248
+Detected information:
+
+### FMC Type
+
+* Next Generation FMC
+* Legacy FMC
+
+### CDU Display Type
+
+* LCD CDU
+* CRT CDU
+
+---
+
+## ATC / ALTN Key Configuration
+
+The ATC key behavior can be configured in:
+
+```ini
+[FMC]
+ATC_KEY=ALTN
 ```
 
-and automatically detects:
+Available options:
 
-### Next Generation FMC
+* ATC = Original PSX ATC key
+* ALTN = FMC COMM + LSK 2L (777-style ALTN page)
 
-Uses:
+The behavior can also be changed from the CDU scratchpad:
 
-* White LCD colors
-* ATC key alternate mode
+* CDU-ATC  -> the ALTN key on the PFP7 = ATC page
+* CDU-ALTN -> the ALTN key on the PFP7 = ALTN page
 
-### Legacy FMC
+Changes are saved automatically to:
 
-Uses:
+```text
+psx_pfp7.ini
+```
 
-* Green CRT display mode
-* Original ATC key behavior
+### Legacy FMC Behavior
+
+When PSX reports that the Next Generation FMC is not active, the bridge automatically forces the original ATC key behavior at runtime.
+
+The saved INI setting is preserved and becomes active again automatically when the Next Generation FMC is re-enabled.
 
 ---
 
 ## Automatic MobiFlight Detection
 
-The bridge first attempts to locate MobiFlight using:
+The bridge first attempts to locate MobiFlight through:
 
 ```text
 HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\MobiFlight Connector
 ```
 
-If the registry lookup fails or the required DLL is missing:
-
-```text
-MobiFlightWwFcu.dll
-```
-
-the bridge falls back to the path configured in:
+If the registry lookup fails, or the required DLL is missing, the path configured in:
 
 ```ini
 [MOBIFLIGHT]
 PATH=
 ```
 
+is used as a fallback.
+
 ---
 
 ## Automatic MobiFlight Startup
 
-If the MobiFlight websocket is not available:
-
-```text
-127.0.0.1:8320
-```
-
-the bridge will automatically start:
+If MobiFlight is not running, the bridge automatically starts:
 
 ```text
 MFConnector.exe
 ```
 
-from the configured MobiFlight installation directory.
+before connecting to the LCD display.
+
+The bridge also displays the detected MobiFlight version at startup.
 
 ---
 
-## Requirements
+## MobiFlight Requirements
 
-### Software
+This bridge requires:
 
-* Aerowinx PSX
-* MobiFlight Connector
-* Python 3.11 or newer
+* MobiFlight Connector v11.1.0 or newer
 
-### Python Packages
-
-```bash
-pip install hidapi
-pip install websockets
-pip install pythonnet
-```
+If the required Winwing interface is unavailable, the bridge will display an advisory message suggesting an update or reinstall of MobiFlight Connector.
 
 ---
 
 ## Configuration
-
-Edit:
-
-```text
-psx_pfp7.ini
-```
 
 Example:
 
@@ -219,6 +206,7 @@ PORT=10747
 [FMC]
 VID=0x4098
 PID=0xBB37
+ATC_KEY=ALTN
 
 [MOBIFLIGHT]
 PATH=C:\Users\<username>\AppData\Local\MobiFlight\MobiFlight Connector
@@ -236,39 +224,38 @@ Run:
 python psx_pfp7.py
 ```
 
-Example startup:
+Useful scratchpad commands:
 
-```text
-PSX ↔ WinCTRL PFP7 Bridge v0.996
+* CDU-L
+* CDU-C
+* CDU-R
+* CDU-ATC
+* CDU-ALTN
 
-[MOBIFLIGHT] install dir from registry
-[MOBIFLIGHT] started
-[MOBIFLIGHT] connected
-
-[PSX] connected
-[PFP7 LED] connected
-```
+Press CTRL+C to terminate the bridge.
 
 ---
 
 ## Version History
 
-### v0.991
+### v1.00
 
-* CDU screen caching
-* Removed CDU reload sequence
-
-### v0.995
-
-* Full LCD color support
-* Qs500-Qs541 support
-
-### v0.996
-
+* Full CDU LCD color support
+* CDU screen and color caching
 * Automatic MobiFlight detection
-* Registry lookup
-* INI fallback
 * Automatic MobiFlight startup
+* MobiFlight version reporting
+* Configurable ATC / ALTN behavior
+* Scratchpad command support
+* Runtime Legacy FMC ATC override
+* Improved startup diagnostics
+* Cleaner logging with DEBUG support
+
+---
+
+## Disclaimer
+
+This project is an independent community project and is not affiliated with or endorsed by Aerowinx, Winwing, WinCTRL, or MobiFlight.
 
 ---
 
@@ -276,4 +263,4 @@ PSX ↔ WinCTRL PFP7 Bridge v0.996
 
 Jamie Janssen
 
-Developed for the WinCTRL PFP7 CDU and Aerowinx PSX community.
+Developed for the Aerowinx PSX and WinCTRL PFP7 community.

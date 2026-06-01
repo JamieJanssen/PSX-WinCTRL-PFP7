@@ -134,8 +134,8 @@ Available options:
 
 The behavior can also be changed from the CDU scratchpad:
 
-* CDU-ATC
-* CDU-ALTN
+* CDU-ATC  -> the ALTN key on the PFP7 = ATC page
+* CDU-ALTN -> the ALTN key on the PFP7 = ALTN page
 
 Changes are saved automatically to:
 

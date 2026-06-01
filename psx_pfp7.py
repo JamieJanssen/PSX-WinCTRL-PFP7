@@ -9,6 +9,8 @@ import queue
 import asyncio
 import subprocess
 import re
+import ctypes
+from ctypes import wintypes
 from collections import defaultdict
 
 try:
@@ -30,7 +32,7 @@ from System import Byte, Array, Int32
 # Version / debug
 # ============================================================
 
-VERSION = "0.996"
+VERSION = "1.00"
 DEBUG = False
 
 
@@ -94,6 +96,10 @@ CDU_ATC_ALTN_SEQUENCE = [65, 42] #Key sequence FMC COMM + LSK2 Left > opens ALTN
 
 CDU_SWITCH_CLEAR_SEQUENCE = [39, -1]
 
+# Bridge scratchpad commands are removed by holding CLR briefly.
+# PSX treats a held CLR key as "clear scratchpad".
+CDU_COMMAND_CLEAR_HOLD_SECONDS = 1.00
+
 
 class RuntimeConfig:
     def __init__(self):
@@ -101,17 +107,21 @@ class RuntimeConfig:
         self.active_cdu = DEFAULT_CDU
         self.cdu_color = DEFAULT_CDU_COLOR
         self.cdu_atc_altn = DEFAULT_CDU_ATC_ALTN
+        self.cdu_atc_altn_user = DEFAULT_CDU_ATC_ALTN
+        self.nextgen_fmc = True
         self.mode = "DEFAULT"
 
     def set_ng(self):
         with self.lock:
             self.cdu_color = "w"
-            self.cdu_atc_altn = 1
+            self.nextgen_fmc = True
+            self.cdu_atc_altn = self.cdu_atc_altn_user
             self.mode = "FMC_NG"
 
     def set_legacy(self):
         with self.lock:
             self.cdu_color = "g"
+            self.nextgen_fmc = False
             self.cdu_atc_altn = 0
             self.mode = "FMC_LEGACY"
 
@@ -137,7 +147,12 @@ class RuntimeConfig:
     def set_from_qi248(self, nextgen_fmc, cdu_lcd):
         with self.lock:
             self.cdu_color = "w" if cdu_lcd else "g"
-            self.cdu_atc_altn = 1 if nextgen_fmc else 0
+            self.nextgen_fmc = bool(nextgen_fmc)
+
+            # ATC/ALTN behavior is user-configurable when NG FMC is active.
+            # When Legacy FMC is active, force the original ATC key at runtime only.
+            # Do not save this forced runtime change to psx_pfp7.ini.
+            self.cdu_atc_altn = self.cdu_atc_altn_user if self.nextgen_fmc else 0
 
             active_cdu = self.active_cdu
 
@@ -154,9 +169,20 @@ class RuntimeConfig:
         with self.lock:
             return self.cdu_color
 
+    def set_cdu_atc_altn(self, atc_altn):
+        with self.lock:
+            self.cdu_atc_altn_user = 1 if int(atc_altn) == 1 else 0
+            self.cdu_atc_altn = self.cdu_atc_altn_user if self.nextgen_fmc else 0
+
+
     def get_cdu_atc_altn(self):
         with self.lock:
             return self.cdu_atc_altn
+
+    def get_cdu_atc_altn_user(self):
+        with self.lock:
+            return self.cdu_atc_altn_user
+
 
     def get_mode(self):
         with self.lock:
@@ -321,6 +347,160 @@ def log_debug(message):
         log(message)
 
 
+
+ANSI_HIGHLIGHT = "\033[92m"  # Bright green. Change to 97=white, 96=cyan, 93=yellow if desired.
+ANSI_RESET = "\033[0m"
+
+
+def log_highlight(message):
+    with STATUS.lock:
+        timestamp = time.strftime("%H:%M:%S")
+        print(f"{timestamp}  {ANSI_HIGHLIGHT}{message}{ANSI_RESET}", flush=True)
+
+
+def get_windows_file_version(path):
+    """Return Windows file version string for an exe/dll, or None if unavailable."""
+    if os.name != "nt" or not path or not os.path.exists(path):
+        return None
+
+    try:
+        size = ctypes.windll.version.GetFileVersionInfoSizeW(str(path), None)
+        if not size:
+            return None
+
+        res = ctypes.create_string_buffer(size)
+
+        if not ctypes.windll.version.GetFileVersionInfoW(str(path), 0, size, res):
+            return None
+
+        u_len = wintypes.UINT()
+        lp_buffer = ctypes.c_void_p()
+
+        if not ctypes.windll.version.VerQueryValueW(
+            res,
+            "\\",
+            ctypes.byref(lp_buffer),
+            ctypes.byref(u_len)
+        ):
+            return None
+
+        class VS_FIXEDFILEINFO(ctypes.Structure):
+            _fields_ = [
+                ("dwSignature", wintypes.DWORD),
+                ("dwStrucVersion", wintypes.DWORD),
+                ("dwFileVersionMS", wintypes.DWORD),
+                ("dwFileVersionLS", wintypes.DWORD),
+                ("dwProductVersionMS", wintypes.DWORD),
+                ("dwProductVersionLS", wintypes.DWORD),
+                ("dwFileFlagsMask", wintypes.DWORD),
+                ("dwFileFlags", wintypes.DWORD),
+                ("dwFileOS", wintypes.DWORD),
+                ("dwFileType", wintypes.DWORD),
+                ("dwFileSubtype", wintypes.DWORD),
+                ("dwFileDateMS", wintypes.DWORD),
+                ("dwFileDateLS", wintypes.DWORD),
+            ]
+
+        ffi = ctypes.cast(
+            lp_buffer,
+            ctypes.POINTER(VS_FIXEDFILEINFO)
+        ).contents
+
+        if ffi.dwSignature != 0xFEEF04BD:
+            return None
+
+        major = ffi.dwFileVersionMS >> 16
+        minor = ffi.dwFileVersionMS & 0xFFFF
+        build = ffi.dwFileVersionLS >> 16
+        revision = ffi.dwFileVersionLS & 0xFFFF
+
+        parts = [major, minor, build, revision]
+        while len(parts) > 3 and parts[-1] == 0:
+            parts.pop()
+
+        return ".".join(str(p) for p in parts)
+
+    except Exception:
+        return None
+
+
+def get_mobiflight_exe_path(mobiflight_path):
+    if not mobiflight_path:
+        return None
+
+    candidates = [
+        "MFConnector.exe",
+        "MobiFlight Connector.exe",
+        "MobiFlight.exe",
+    ]
+
+    for name in candidates:
+        candidate = os.path.join(mobiflight_path, name)
+        if os.path.exists(candidate):
+            return candidate
+
+    return None
+
+
+def log_mobiflight_exe_version(mobiflight_path):
+    exe_path = get_mobiflight_exe_path(mobiflight_path)
+
+    if not exe_path:
+        log("[MOBIFLIGHT] MFConnector.exe version unknown; executable not found")
+        return None
+
+    version = get_windows_file_version(exe_path)
+
+    if version:
+        log(f"[MOBIFLIGHT] MFConnector.exe version {version}")
+    else:
+        log("[MOBIFLIGHT] MFConnector.exe version unknown")
+
+    return version
+
+
+def mobiflight_compatibility_error(reason):
+    return (
+        f"{reason}\n\n"
+        "Unsupported MobiFlight Connector installation.\n"
+        "Please install MobiFlight Connector v11.1.0 or newer.\n"
+        "If MobiFlight is already up to date, uninstall and reinstall "
+        "MobiFlight Connector."
+    )
+
+
+
+def save_ini_value(section, key, value):
+    """Update one value in psx_pfp7.ini.
+
+    Note: configparser rewrites the ini file, so comments may be removed.
+    """
+    cfg = configparser.ConfigParser()
+    cfg.read(CONFIG_FILE, encoding="utf-8")
+
+    if not cfg.has_section(section):
+        cfg.add_section(section)
+
+    cfg.set(section, key, str(value))
+
+    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+        cfg.write(f)
+
+
+def atc_key_value_to_altn(value):
+    """Return 1 for ALTN mode and 0 for original ATC mode."""
+    value = str(value or "").strip().upper()
+
+    if value == "ALTN":
+        return 1
+
+    return 0
+
+
+def atc_altn_to_ini_value(atc_altn):
+    return "ALTN" if int(atc_altn) == 1 else "ATC"
+
+
 def connect_with_retry(host, port, name, stop_evt=None, retry_delay=5.0):
     while stop_evt is None or not stop_evt.is_set():
         sock = None
@@ -379,7 +559,11 @@ class Pfp7LedController:
         sender_type = asm.GetType("MobiFlightWwFcu.WinwingMessageSender")
 
         if sender_type is None:
-            raise RuntimeError("WinwingMessageSender not found in MobiFlightWwFcu.dll")
+            raise RuntimeError(
+                mobiflight_compatibility_error(
+                    "WinwingMessageSender not found in MobiFlightWwFcu.dll."
+                )
+            )
 
         self.sender = System.Activator.CreateInstance(
             sender_type,
@@ -396,7 +580,7 @@ class Pfp7LedController:
             self.sender.Connect()
             self.sender.SendHeartBeatMessage()
             self.connected = True
-            log("[PFP7 LED] connected")
+            log_debug("[PFP7 LED] connected")
 
             # Set initial screen backlight brightness
             self._set_screen_brightness_step_unlocked(
@@ -424,7 +608,7 @@ class Pfp7LedController:
         name = name.upper()
 
         if name not in PFP7_LEDS:
-            log(f"[PFP7 LED] unknown LED: {name}")
+            log_debug(f"[PFP7 LED] unknown LED: {name}")
             return
 
         with self.lock:
@@ -488,7 +672,7 @@ class Pfp7LedController:
             Byte(value)
         )
 
-        log(f"[PFP7 LED] {name} {'ON' if on else 'OFF'}")
+        log_debug(f"[PFP7 LED] {name} {'ON' if on else 'OFF'}")
 
 
 
@@ -562,16 +746,11 @@ def start_mobiflight_if_needed(mobiflight_path):
         log("[MOBIFLIGHT] already running")
         return True
 
-    exe_candidates = [
-        os.path.join(mobiflight_path, "MFConnector.exe"),
-    ]
-
-    exe_path = next((p for p in exe_candidates if os.path.exists(p)), None)
+    exe_path = get_mobiflight_exe_path(mobiflight_path)
 
     if not exe_path:
         log("[MOBIFLIGHT] executable not found; websocket retry will continue")
-        for candidate in exe_candidates:
-            log_debug(f"[MOBIFLIGHT] checked: {candidate}")
+        log_debug(f"[MOBIFLIGHT] checked: {os.path.join(mobiflight_path, 'MFConnector.exe')}")
         return False
 
     try:
@@ -603,6 +782,13 @@ def load_config():
     port = cfg.getint("PSX", "port", fallback=10747)
     vid = int(cfg.get("FMC", "VID", fallback="0x4098"), 16)
     pid = int(cfg.get("FMC", "PID", fallback="0xBB37"), 16)
+
+    atc_key = cfg.get("FMC", "ATC_KEY", fallback="ALTN").strip().upper()
+    if atc_key not in ("ATC", "ALTN"):
+        log(f"[CONFIG] invalid FMC ATC_KEY={atc_key!r}; using ALTN")
+        atc_key = "ALTN"
+
+    RUNTIME_CONFIG.set_cdu_atc_altn(atc_key_value_to_altn(atc_key))
 
     mobiflight_path = get_mobiflight_path_from_registry()
 
@@ -651,7 +837,9 @@ def load_config():
 
     log(f"[CONFIG] PSX {host}:{port}")
     log(f"[CONFIG] FMC VID={hex(vid)} PID={hex(pid)}")
+    log(f"[CONFIG] FMC ATC_KEY={atc_altn_to_ini_value(RUNTIME_CONFIG.get_cdu_atc_altn_user())}")
     log(f"[CONFIG] DLL={DLL_PATH}")
+    log_mobiflight_exe_version(MOBIFLIGHT_PATH)
 
     return host, port, vid, pid
 
@@ -969,7 +1157,7 @@ class PsxSender:
             s.sendall(f"Qi{cfg['lights_qi']}\n".encode("ascii"))
             s.sendall(f"Qi{PSX_FMC_CONFIG_QI}\n".encode("ascii"))
 
-            log(
+            log_debug(
                 f"[CONFIG] Active CDU {cfg['label']}: "
                 f"{cfg['key_qh']}, Qs{cfg['screen_qs_lines'][0]}-Qs{cfg['screen_qs_lines'][-1]}, "
                 f"Qi{cfg['lights_qi']}"
@@ -1010,6 +1198,38 @@ class PsxSender:
         for code in CDU_SWITCH_CLEAR_SEQUENCE:
             self.send_raw_psx_line(f"{source_qh_name}={code}")
             time.sleep(0.03)
+
+    def clear_scratchpad_command(self, source_qh_name):
+        # Hold CLR briefly to clear the complete scratchpad command.
+        # This is used after bridge commands such as CDU-L, CDU-C, CDU-R,
+        # CDU-ATC, and CDU-ALTN.
+        self.send_raw_psx_line(f"{source_qh_name}=39")
+        time.sleep(CDU_COMMAND_CLEAR_HOLD_SECONDS)
+        self.send_raw_psx_line(f"{source_qh_name}=-1")
+
+    def clear_scratchpad_command_async(self, source_qh_name):
+        # Do not block the CDU switch or display redraw while CLR is held.
+        # The command is cleared on the source CDU while the bridge can already
+        # switch to/render the selected CDU.
+        t = threading.Thread(
+            target=self.clear_scratchpad_command,
+            args=(source_qh_name,),
+            daemon=True
+        )
+        t.start()
+
+    def set_atc_key_mode(self, mode):
+        mode = str(mode or "").strip().upper()
+
+        if mode not in ("ATC", "ALTN"):
+            return False
+
+        atc_altn = atc_key_value_to_altn(mode)
+        RUNTIME_CONFIG.set_cdu_atc_altn(atc_altn)
+        save_ini_value("FMC", "ATC_KEY", atc_altn_to_ini_value(atc_altn))
+
+        log(f"[CONFIG] FMC ATC_KEY={atc_altn_to_ini_value(atc_altn)} saved to psx_pfp7.ini")
+        return True
 
     def start(self):
         self.rx_thread.start()
@@ -1191,7 +1411,7 @@ class PsxSender:
 
         self.cdu_lights_state[lights_qi] = state
 
-        log(f"[CDU LIGHTS] Qi{lights_qi}={state} / 0x{state:04X}")
+        log_debug(f"[CDU LIGHTS] Qi{lights_qi}={state} / 0x{state:04X}")
         self.pfp7_leds.apply_psx_cdu_lights_bitmask(state)
 
     def _apply_qi248_state(self, state, force_log=False):
@@ -1203,10 +1423,10 @@ class PsxSender:
         RUNTIME_CONFIG.set_from_qi248(nextgen_fmc, cdu_lcd)
 
         color = "w" if cdu_lcd else "g"
-        atc_altn = 1 if nextgen_fmc else 0
+        atc_altn = RUNTIME_CONFIG.get_cdu_atc_altn()
 
         if force_log:
-            log(
+            log_debug(
                 f"[CONFIG] Qi248={state} / 0x{state:08X} -> "
                 f"CDU {cfg['label']}, CDU_COLOR={color}, CDU_ATC_ALTN={atc_altn}"
             )
@@ -1307,8 +1527,20 @@ class PsxSender:
 
             if target_cdu:
                 source_qh_name = self._active_qh_name()
-                self.clear_command_from_source_cdu(source_qh_name)
                 self.set_active_cdu(target_cdu)
+                self.clear_scratchpad_command_async(source_qh_name)
+                return
+
+            if command in ("CDU-ATC", "CDU ATC"):
+                source_qh_name = self._active_qh_name()
+                self.set_atc_key_mode("ATC")
+                self.clear_scratchpad_command_async(source_qh_name)
+                return
+
+            if command in ("CDU-ALTN", "CDU ALTN"):
+                source_qh_name = self._active_qh_name()
+                self.set_atc_key_mode("ALTN")
+                self.clear_scratchpad_command_async(source_qh_name)
                 return
 
         # Store every CDU line, even when it is not the currently displayed CDU.
@@ -1374,7 +1606,7 @@ def main():
     mapping = load_map()
 
     lsk_bps = {bp for bp, name in mapping.items() if name.upper().startswith("LSK")}
-    log(f"[MAP] LSK bitpos: {sorted(lsk_bps)}")
+    log_debug(f"[MAP] LSK bitpos: {sorted(lsk_bps)}")
 
     bp_to_code = {}
     for bp, name in mapping.items():
@@ -1419,8 +1651,10 @@ def main():
     psx = PsxSender(psx_host, psx_port, mobiflight, pfp7_leds, MIN_SEND_INTERVAL)
     psx.start()
 
-    log("[RUN] HID keys -> active PSX CDU, active PSX CDU screen -> MobiFlight, active PSX CDU lights -> PFP7 LEDs. Ctrl+C to quit.")
-    log("[CONFIG] Scratchpad commands: CDU-L = Left, CDU-C = Center, CDU-R = Right")
+    log("[RUN] HID keys -> active PSX CDU, active PSX CDU screen -> MobiFlight, active PSX CDU lights -> PFP7 LEDs.")
+    log_highlight("[RUN] Press CTRL+C to quit.")
+    log_highlight("[CONFIG] Scratchpad commands: CDU-L = Left, CDU-C = Center, CDU-R = Right")
+    log_highlight("[CONFIG] Scratchpad commands: CDU-ATC = original ATC key, CDU-ALTN = ATC key opens ALTN page")
     
     prev_pressed = set()
     stable_count = defaultdict(int)

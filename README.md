@@ -36,6 +36,47 @@ Supported:
 
 ---
 
+## Key Hold Behaviour
+
+Most CDU keys are sent to PSX as a single key press.
+
+The following keys support hold functionality:
+
+| Key        | Behaviour                                                   |
+| ---------- | ----------------------------------------------------------- |
+| BRT+       | Repeats brightness increase while held                      |
+| BRT-       | Repeats brightness decrease while held                      |
+| CLR        | Sends a key press on push and a release event when released |
+| ATC / ALTN | Sends a key press on push and a release event when released |
+
+### CLR Hold
+
+The bridge uses a held CLR key to clear scratchpad commands entered directly into the CDU scratchpad, such as:
+
+* CDU-L
+* CDU-C
+* CDU-R
+* CDU-ATC
+* CDU-ALTN
+
+After a command is detected, the bridge briefly holds CLR and then releases it automatically to remove the command from the scratchpad.
+
+### Other Keys
+
+All remaining CDU keys are transmitted as momentary key presses only, including:
+
+* LSK keys
+* EXEC
+* MENU
+* PREV PAGE
+* NEXT PAGE
+* Alphanumeric keys
+* Numeric keys
+
+Holding these keys currently has no special behaviour within the bridge.
+
+---
+
 ## CDU Switching
 
 The active CDU can be selected directly from the scratchpad:

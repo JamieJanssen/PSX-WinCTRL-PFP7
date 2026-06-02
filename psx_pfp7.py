@@ -32,8 +32,8 @@ from System import Byte, Array, Int32
 # Version / debug
 # ============================================================
 
-VERSION = "1.00"
-DEBUG = False
+VERSION = "1.01"
+DEBUG = "--debug" in [arg.lower() for arg in sys.argv[1:]]
 
 
 # ============================================================
@@ -62,6 +62,7 @@ CDU_CONFIGS = {
         "key_qh": "Qh401",
         "screen_qs_lines": list(range(62, 76)),
         "lights_qi": 86,
+        "blank_qi": 89,
         "lcd_qi248_bit": 1 << 19,
     },
     "C": {
@@ -69,6 +70,7 @@ CDU_CONFIGS = {
         "key_qh": "Qh402",
         "screen_qs_lines": list(range(76, 90)),
         "lights_qi": 87,
+        "blank_qi": 90,
         "lcd_qi248_bit": 1 << 21,
     },
     "R": {
@@ -76,6 +78,7 @@ CDU_CONFIGS = {
         "key_qh": "Qh403",
         "screen_qs_lines": list(range(90, 104)),
         "lights_qi": 88,
+        "blank_qi": 91,
         "lcd_qi248_bit": 1 << 20,
     },
 }
@@ -230,6 +233,16 @@ PSX_TO_MOBIFLIGHT_COLOR = {
 # Qi248 bit 20 = Right CDU LCD
 PSX_FMC_CONFIG_QI = 248
 QI248_NEXTGEN_FMC_BIT = 1 << 13
+
+# PSX CDU blanking timers:
+# Qi89 = BlankTimeCduL, Qi90 = BlankTimeCduC, Qi91 = BlankTimeCduR.
+# The CDU screen must be blanked whenever the related value is non-zero.
+CDU_BLANK_QI = {
+    "L": 89,
+    "C": 90,
+    "R": 91,
+}
+CDU_BLANK_QI_TO_CDU = {qi: cdu for cdu, qi in CDU_BLANK_QI.items()}
 
 MDT_ALL_LIGHTS_BIT = 0x2000  # 8192
 
@@ -1114,6 +1127,7 @@ class PsxSender:
         self.fmc_lock = threading.Lock()
 
         self.cdu_lights_state = {}
+        self.cdu_blank_state = {"L": 0, "C": 0, "R": 0}
         self.qi248_state = None
 
     def _active_config(self):
@@ -1132,6 +1146,9 @@ class PsxSender:
 
     def _active_lights_qi(self):
         return self._active_config()["lights_qi"]
+
+    def _active_blank_qi(self):
+        return self._active_config()["blank_qi"]
 
     def _reset_fmc_lines_for_active_cdu(self):
         # Kept for compatibility, but no longer clears the screen.
@@ -1155,12 +1172,13 @@ class PsxSender:
                 s.sendall(f"Qs{q}\n".encode("ascii"))
 
             s.sendall(f"Qi{cfg['lights_qi']}\n".encode("ascii"))
+            s.sendall(f"Qi{cfg['blank_qi']}\n".encode("ascii"))
             s.sendall(f"Qi{PSX_FMC_CONFIG_QI}\n".encode("ascii"))
 
             log_debug(
                 f"[CONFIG] Active CDU {cfg['label']}: "
                 f"{cfg['key_qh']}, Qs{cfg['screen_qs_lines'][0]}-Qs{cfg['screen_qs_lines'][-1]}, "
-                f"Qi{cfg['lights_qi']}"
+                f"Qi{cfg['lights_qi']}, Qi{cfg['blank_qi']}"
             )
 
         except Exception as e:
@@ -1299,12 +1317,12 @@ class PsxSender:
                 for q in CDU_COLOR_QS_RANGE:
                     s.sendall(f"Qs{q}\n".encode("ascii"))
 
-                for qi in (86, 87, 88, PSX_FMC_CONFIG_QI):
+                for qi in (86, 87, 88, 89, 90, 91, PSX_FMC_CONFIG_QI):
                     s.sendall(f"Qi{qi}\n".encode("ascii"))
 
-                log(
+                log_debug(
                     "[PSX] requested all CDU screen Qs62-Qs103, "
-                    "LCD color Qs500-Qs541, lights Qi86-Qi88, and Qi248"
+                    "LCD color Qs500-Qs541, lights Qi86-Qi88, blanking Qi89-Qi91, and Qi248"
                 )
 
             except Exception as e:
@@ -1389,6 +1407,16 @@ class PsxSender:
                 self._handle_cdu_lights(line)
                 continue
 
+            if line.startswith("Qi") and "=" in line:
+                try:
+                    qi_num = int(line[2:].split("=", 1)[0])
+                except ValueError:
+                    qi_num = None
+
+                if qi_num in CDU_BLANK_QI_TO_CDU:
+                    self._handle_cdu_blank(line, qi_num)
+                    continue
+
             if line.startswith(f"Qi{PSX_FMC_CONFIG_QI}="):
                 self._handle_qi248(line)
                 continue
@@ -1413,6 +1441,31 @@ class PsxSender:
 
         log_debug(f"[CDU LIGHTS] Qi{lights_qi}={state} / 0x{state:04X}")
         self.pfp7_leds.apply_psx_cdu_lights_bitmask(state)
+
+    def _handle_cdu_blank(self, line, qi_num):
+        _, value = line.split("=", 1)
+
+        try:
+            state = int(value.strip())
+        except ValueError:
+            return
+
+        cdu = CDU_BLANK_QI_TO_CDU.get(qi_num)
+        if not cdu:
+            return
+
+        if state == self.cdu_blank_state.get(cdu, 0):
+            return
+
+        self.cdu_blank_state[cdu] = state
+
+        log_debug(f"[CDU BLANK] Qi{qi_num} CDU {cdu}={state}")
+
+        if cdu == RUNTIME_CONFIG.get_active_cdu():
+            with self.fmc_lock:
+                self.fmc_dirty = True
+
+            self._send_fmc_frame()
 
     def _apply_qi248_state(self, state, force_log=False):
         cfg = self._active_config()
@@ -1464,16 +1517,28 @@ class PsxSender:
 
             self.fmc_dirty = False
 
-        ordered_lines = [self.fmc_lines.get(q, "") for q in self._active_qs_lines()]
-        if RUNTIME_CONFIG.get_cdu_color() == "w":
-            # LCD mode: use PSX per-character LCD color strings.
-            ordered_color_lines = [
-                self.all_fmc_color_lines.get(q, "")
-                for q in self._active_color_qs_lines()
-            ]
-        else:
-            # CRT/legacy mode: keep the existing all-green behavior.
+        active_cdu = RUNTIME_CONFIG.get_active_cdu()
+
+        if self.cdu_blank_state.get(active_cdu, 0) != 0:
+            # PSX BlankTimeCdu* is active: keep caching incoming CDU text,
+            # but render the active hardware CDU as blank until the timer is 0.
+            ordered_lines = [""] * FMC_HEIGHT
             ordered_color_lines = None
+            log_debug(
+                f"[CDU BLANK] CDU {active_cdu} screen blanked "
+                f"value={self.cdu_blank_state.get(active_cdu, 0)}"
+            )
+        else:
+            ordered_lines = [self.fmc_lines.get(q, "") for q in self._active_qs_lines()]
+            if RUNTIME_CONFIG.get_cdu_color() == "w":
+                # LCD mode: use PSX per-character LCD color strings.
+                ordered_color_lines = [
+                    self.all_fmc_color_lines.get(q, "")
+                    for q in self._active_color_qs_lines()
+                ]
+            else:
+                # CRT/legacy mode: keep the existing all-green behavior.
+                ordered_color_lines = None
 
         # Debug: FMC frame queued for MobiFlight
         log_debug("[FMC] frame queued")
@@ -1533,14 +1598,36 @@ class PsxSender:
 
             if command in ("CDU-ATC", "CDU ATC"):
                 source_qh_name = self._active_qh_name()
-                self.set_atc_key_mode("ATC")
+
+                # Start clearing immediately, before saving the ini setting.
+                # This keeps scratchpad cleanup independent from ATC/ALTN mode changes.
                 self.clear_scratchpad_command_async(source_qh_name)
+
+                # Also clear the local display cache immediately so MobiFlight
+                # does not keep showing the command while PSX processes CLR.
+                self.all_fmc_lines[qnum] = ""
+                with self.fmc_lock:
+                    self.fmc_dirty = True
+                self._send_fmc_frame()
+
+                self.set_atc_key_mode("ATC")
                 return
 
             if command in ("CDU-ALTN", "CDU ALTN"):
                 source_qh_name = self._active_qh_name()
-                self.set_atc_key_mode("ALTN")
+
+                # Start clearing immediately, before saving the ini setting.
+                # This keeps scratchpad cleanup independent from ATC/ALTN mode changes.
                 self.clear_scratchpad_command_async(source_qh_name)
+
+                # Also clear the local display cache immediately so MobiFlight
+                # does not keep showing the command while PSX processes CLR.
+                self.all_fmc_lines[qnum] = ""
+                with self.fmc_lock:
+                    self.fmc_dirty = True
+                self._send_fmc_frame()
+
+                self.set_atc_key_mode("ALTN")
                 return
 
         # Store every CDU line, even when it is not the currently displayed CDU.
@@ -1600,6 +1687,9 @@ class PsxSender:
 
 def main():
     STATUS.start()
+
+    if DEBUG:
+        log("[CONFIG] Debug logging enabled")
 
     psx_host, psx_port, VID, PID = load_config()
     start_mobiflight_if_needed(MOBIFLIGHT_PATH)

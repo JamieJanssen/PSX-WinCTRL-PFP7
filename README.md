@@ -6,6 +6,7 @@ The bridge provides:
 
 * PFP7 CDU keyboard input to PSX
 * PSX CDU display output to the Winwing/MobiFlight LCD
+* PSX CDU screen blanking support
 * PSX CDU annunciator support
 * Automatic Left, Center and Right CDU switching
 * Automatic Next Generation / Legacy FMC detection
@@ -36,6 +37,81 @@ Supported:
 
 ---
 
+## Key Hold Behaviour
+
+Most CDU keys are sent to PSX as a single key press.
+
+The following keys support hold functionality:
+
+| Key        | Behaviour                                                   |
+| ---------- | ----------------------------------------------------------- |
+| BRT+       | Repeats brightness increase while held                      |
+| BRT-       | Repeats brightness decrease while held                      |
+| CLR        | Sends a key press on push and a release event when released |
+| ATC / ALTN | Sends a key press on push and a release event when released |
+
+### CLR Hold
+
+The bridge uses a held CLR key to clear scratchpad commands entered directly into the CDU scratchpad, such as:
+
+* CDU-L
+* CDU-C
+* CDU-R
+* CDU-ATC
+* CDU-ALTN
+
+After a command is detected, the bridge briefly holds CLR and then releases it automatically to remove the command from the scratchpad.
+
+### Other Keys
+
+All remaining CDU keys are transmitted as momentary key presses only, including:
+
+* LSK keys
+* EXEC
+* MENU
+* PREV PAGE
+* NEXT PAGE
+* Alphanumeric keys
+* Numeric keys
+
+Holding these keys currently has no special behaviour within the bridge.
+
+---
+
+## ATC / ALTN Key Configuration
+
+The WINCTRL PFP7 has a ALTN key where the PFP4 (B747) FMC has an ATC key.
+The ATC key behavior can be configured in:
+
+```ini
+[FMC]
+ATC_KEY=ALTN
+```
+
+Available options:
+
+* ATC = Original PSX ATC key
+* ALTN = FMC COMM + LSK 2L (777-style ALTN page)
+
+The behavior can also be changed from the CDU scratchpad:
+
+* CDU-ATC  -> the ALTN key on the PFP7 = ATC page
+* CDU-ALTN -> the ALTN key on the PFP7 = ALTN page
+
+Changes are saved automatically to:
+
+```text
+psx_pfp7.ini
+```
+
+### Legacy FMC Behavior
+
+When PSX reports that the Next Generation FMC is not active, the bridge automatically forces the original ATC key behavior at runtime.
+
+The saved INI setting is preserved and becomes active again automatically when the Next Generation FMC is re-enabled.
+
+---
+
 ## CDU Switching
 
 The active CDU can be selected directly from the scratchpad:
@@ -60,6 +136,27 @@ This allows immediate display updates when switching between:
 * Left CDU
 * Center CDU
 * Right CDU
+
+---
+
+## CDU Screen Blanking
+
+The bridge supports PSX CDU screen blanking.
+
+Data source:
+
+* Qi89 – BlankTimeCduL, Left CDU
+* Qi90 – BlankTimeCduC, Center CDU
+* Qi91 – BlankTimeCduR, Right CDU
+
+Behaviour:
+
+* Value = 0 → CDU display visible
+* Value ≠ 0 → CDU display blanked
+
+This reproduces the FMC/CDU blanking behaviour used after certain key presses, during FMC warm-up, or when CDU power is unavailable.
+
+The bridge continues to cache CDU screen and color data while the display is blanked. When the blanking timer returns to zero, the most recent CDU page is displayed immediately.
 
 ---
 
@@ -115,40 +212,6 @@ Detected information:
 
 * LCD CDU (color)
 * CRT CDU (green)
-
----
-
-## ATC / ALTN Key Configuration
-
-The WINCTRL PFP7 has a ALTN key where the PFP4 (B747) FMC has an ATC key.
-The ATC key behavior can be configured in:
-
-```ini
-[FMC]
-ATC_KEY=ALTN
-```
-
-Available options:
-
-* ATC = Original PSX ATC key
-* ALTN = FMC COMM + LSK 2L (777-style ALTN page)
-
-The behavior can also be changed from the CDU scratchpad:
-
-* CDU-ATC  -> the ALTN key on the PFP7 = ATC page
-* CDU-ALTN -> the ALTN key on the PFP7 = ALTN page
-
-Changes are saved automatically to:
-
-```text
-psx_pfp7.ini
-```
-
-### Legacy FMC Behavior
-
-When PSX reports that the Next Generation FMC is not active, the bridge automatically forces the original ATC key behavior at runtime.
-
-The saved INI setting is preserved and becomes active again automatically when the Next Generation FMC is re-enabled.
 
 ---
 
@@ -225,6 +288,12 @@ Run:
 python psx_pfp7.py
 ```
 
+Enable diagnostic logging when needed:
+
+```bash
+python psx_pfp7.py --debug
+```
+
 Useful scratchpad commands:
 
 * CDU-L
@@ -238,6 +307,17 @@ Press CTRL+C to terminate the bridge.
 ---
 
 ## Version History
+
+### v1.01
+
+* Added CDU screen blanking support
+* Supports BlankTimeCduL (Qi89) for the Left CDU
+* Supports BlankTimeCduC (Qi90) for the Center CDU
+* Supports BlankTimeCduR (Qi91) for the Right CDU
+* Blanks the active PFP7 display whenever the related PSX blanking value is non-zero
+* Continues caching CDU screen and color data while blanked
+* Added `--debug` command line option
+* Moved PSX bulk data request logging to debug output
 
 ### v1.00
 

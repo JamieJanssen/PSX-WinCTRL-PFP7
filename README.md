@@ -77,6 +77,40 @@ Holding these keys currently has no special behaviour within the bridge.
 
 ---
 
+## ATC / ALTN Key Configuration
+
+The WINCTRL PFP7 has a ALTN key where the PFP4 (B747) FMC has an ATC key.
+The ATC key behavior can be configured in:
+
+```ini
+[FMC]
+ATC_KEY=ALTN
+```
+
+Available options:
+
+* ATC = Original PSX ATC key
+* ALTN = FMC COMM + LSK 2L (777-style ALTN page)
+
+The behavior can also be changed from the CDU scratchpad:
+
+* CDU-ATC  -> the ALTN key on the PFP7 = ATC page
+* CDU-ALTN -> the ALTN key on the PFP7 = ALTN page
+
+Changes are saved automatically to:
+
+```text
+psx_pfp7.ini
+```
+
+### Legacy FMC Behavior
+
+When PSX reports that the Next Generation FMC is not active, the bridge automatically forces the original ATC key behavior at runtime.
+
+The saved INI setting is preserved and becomes active again automatically when the Next Generation FMC is re-enabled.
+
+---
+
 ## CDU Switching
 
 The active CDU can be selected directly from the scratchpad:
@@ -156,40 +190,6 @@ Detected information:
 
 * LCD CDU (color)
 * CRT CDU (green)
-
----
-
-## ATC / ALTN Key Configuration
-
-The WINCTRL PFP7 has a ALTN key where the PFP4 (B747) FMC has an ATC key.
-The ATC key behavior can be configured in:
-
-```ini
-[FMC]
-ATC_KEY=ALTN
-```
-
-Available options:
-
-* ATC = Original PSX ATC key
-* ALTN = FMC COMM + LSK 2L (777-style ALTN page)
-
-The behavior can also be changed from the CDU scratchpad:
-
-* CDU-ATC  -> the ALTN key on the PFP7 = ATC page
-* CDU-ALTN -> the ALTN key on the PFP7 = ALTN page
-
-Changes are saved automatically to:
-
-```text
-psx_pfp7.ini
-```
-
-### Legacy FMC Behavior
-
-When PSX reports that the Next Generation FMC is not active, the bridge automatically forces the original ATC key behavior at runtime.
-
-The saved INI setting is preserved and becomes active again automatically when the Next Generation FMC is re-enabled.
 
 ---
 

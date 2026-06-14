@@ -32,7 +32,7 @@ from System import Byte, Array, Int32
 # Version / debug
 # ============================================================
 
-VERSION = "1.01"
+VERSION = "1.03"
 DEBUG = "--debug" in [arg.lower() for arg in sys.argv[1:]]
 
 
@@ -260,7 +260,10 @@ NEED_RELEASE = {39, 60}  # CLR, ATC require explicit release on hardware key rel
 DLL_PATH = None
 MOBIFLIGHT_PATH = None
 
-# PFP7 captain
+# WINCTRL USB Vendor ID
+WINCTRL_VENDOR_ID = 0x4098
+
+# PFP7 captain defaults
 PFP7_PRODUCT_ID = 0xBB37
 PFP7_DEST = Array[Byte]([0x33, 0xBB])
 
@@ -484,20 +487,76 @@ def mobiflight_compatibility_error(reason):
 
 
 def save_ini_value(section, key, value):
-    """Update one value in psx_pfp7.ini.
+    """Update one value in psx_pfp7.ini while preserving comments and layout."""
+    section_header = f"[{section}]"
+    key_lower = str(key).strip().lower()
+    value = str(value)
 
-    Note: configparser rewrites the ini file, so comments may be removed.
-    """
-    cfg = configparser.ConfigParser()
-    cfg.read(CONFIG_FILE, encoding="utf-8")
-
-    if not cfg.has_section(section):
+    try:
+        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+    except FileNotFoundError:
+        cfg = configparser.ConfigParser()
         cfg.add_section(section)
+        cfg.set(section, key, value)
 
-    cfg.set(section, key, str(value))
+        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+            cfg.write(f)
+
+        return
+
+    in_section = False
+    section_found = False
+    key_found = False
+    insert_index = None
+
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+
+        # Section header
+        if stripped.startswith("[") and stripped.endswith("]"):
+            if in_section and not key_found:
+                insert_index = i
+
+            in_section = stripped.lower() == section_header.lower()
+
+            if in_section:
+                section_found = True
+                insert_index = i + 1
+
+            continue
+
+        if in_section:
+            insert_index = i + 1
+
+            # Preserve empty/comment lines
+            if not stripped or stripped.startswith(("#", ";")):
+                continue
+
+            if "=" in line:
+                existing_key = line.split("=", 1)[0].strip().lower()
+
+                if existing_key == key_lower:
+                    newline = "\n" if line.endswith("\n") else ""
+                    lines[i] = f"{key} = {value}{newline}"
+                    key_found = True
+                    break
+
+    if not section_found:
+        if lines and not lines[-1].endswith("\n"):
+            lines[-1] += "\n"
+
+        lines.append(f"\n[{section}]\n")
+        lines.append(f"{key} = {value}\n")
+
+    elif not key_found:
+        if insert_index is None:
+            insert_index = len(lines)
+
+        lines.insert(insert_index, f"{key} = {value}\n")
 
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-        cfg.write(f)
+        f.writelines(lines)
 
 
 def atc_key_value_to_altn(value):
@@ -519,7 +578,7 @@ def connect_with_retry(host, port, name, stop_evt=None, retry_delay=5.0):
         sock = None
 
         try:
-            log(f"[{name}] connecting {host}:{port}...")
+            log_debug(f"[{name}] connecting {host}:{port}...")
 
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.connect((host, port))
@@ -648,17 +707,11 @@ class Pfp7LedController:
             Byte(value)
         )
 
-        if force:
-            log(
-                f"[PFP7 BRT] screen backlight "
-                f"step {step + 1}/{PFP7_SCREEN_BRIGHTNESS_STEPS} value={value}"
-            )
-        else:
-            # Screen brightness change logging
-            log_debug(
-                f"[PFP7 BRT] screen backlight "
-                f"step {step + 1}/{PFP7_SCREEN_BRIGHTNESS_STEPS} value={value}"
-            )
+        # Screen brightness change logging
+        log_debug(
+            f"[PFP7 BRT] screen backlight "
+            f"step {step + 1}/{PFP7_SCREEN_BRIGHTNESS_STEPS} value={value}"
+        )
 
     def apply_psx_cdu_lights_bitmask(self, state):
         md_t_all = bool(state & MDT_ALL_LIGHTS_BIT)
@@ -756,7 +809,7 @@ def start_mobiflight_if_needed(mobiflight_path):
         return False
 
     if is_mobiflight_websocket_available():
-        log("[MOBIFLIGHT] already running")
+        log_debug("[MOBIFLIGHT] already running")
         return True
 
     exe_path = get_mobiflight_exe_path(mobiflight_path)
@@ -793,8 +846,17 @@ def load_config():
 
     host = cfg.get("PSX", "host", fallback="127.0.0.1").strip()
     port = cfg.getint("PSX", "port", fallback=10747)
-    vid = int(cfg.get("FMC", "VID", fallback="0x4098"), 16)
+    vid = WINCTRL_VENDOR_ID
     pid = int(cfg.get("FMC", "PID", fallback="0xBB37"), 16)
+    did = cfg.get("FMC", "DID", fallback="33BB").strip().upper().replace("0X", "")
+
+    if len(did) != 4:
+        log(f"[CONFIG] invalid FMC DID={did!r}; using 33BB")
+        did = "33BB"
+
+    global PFP7_PRODUCT_ID, PFP7_DEST
+    PFP7_PRODUCT_ID = pid
+    PFP7_DEST = Array[Byte]([int(did[0:2], 16), int(did[2:4], 16)])
 
     atc_key = cfg.get("FMC", "ATC_KEY", fallback="ALTN").strip().upper()
     if atc_key not in ("ATC", "ALTN"):
@@ -809,7 +871,7 @@ def load_config():
         registry_dll_path = os.path.join(mobiflight_path, "MobiFlightWwFcu.dll")
 
         if os.path.exists(registry_dll_path):
-            log(f"[MOBIFLIGHT] install dir from registry: {mobiflight_path}")
+            log_debug(f"[MOBIFLIGHT] install dir from registry: {mobiflight_path}")
         else:
             log(
                 "[MOBIFLIGHT] registry path found but "
@@ -822,7 +884,7 @@ def load_config():
 
         if mobiflight_path:
             mobiflight_path = mobiflight_path.strip().strip('"')
-            log(f"[MOBIFLIGHT] install dir from ini: {mobiflight_path}")
+            log_debug(f"[MOBIFLIGHT] install dir from ini: {mobiflight_path}")
 
     global DLL_PATH, MOBIFLIGHT_PATH
     MOBIFLIGHT_PATH = mobiflight_path
@@ -848,10 +910,10 @@ def load_config():
         input("\nPress ENTER to exit...")
         sys.exit(1)
 
-    log(f"[CONFIG] PSX {host}:{port}")
-    log(f"[CONFIG] FMC VID={hex(vid)} PID={hex(pid)}")
-    log(f"[CONFIG] FMC ATC_KEY={atc_altn_to_ini_value(RUNTIME_CONFIG.get_cdu_atc_altn_user())}")
-    log(f"[CONFIG] DLL={DLL_PATH}")
+    log_debug(f"[CONFIG] PSX {host}:{port}")
+    log_debug(f"[CONFIG] FMC VID={hex(vid)} PID={hex(pid)} DID={did}")
+    log_debug(f"[CONFIG] FMC ATC_KEY={atc_altn_to_ini_value(RUNTIME_CONFIG.get_cdu_atc_altn_user())}")
+    log_debug(f"[CONFIG] DLL={DLL_PATH}")
     log_mobiflight_exe_version(MOBIFLIGHT_PATH)
 
     return host, port, vid, pid
@@ -941,7 +1003,7 @@ def load_map():
         if by < BYTE_LIMIT:
             mapping[(by, bi)] = str(v).strip()
 
-    log(f"[MAP] loaded {len(mapping)} built-in bitpos (<{BYTE_LIMIT})")
+    log_debug(f"[MAP] loaded {len(mapping)} built-in bitpos (<{BYTE_LIMIT})")
     return mapping
 
 
@@ -985,7 +1047,7 @@ class MobiFlightSender:
         while not self.stop_evt.is_set():
             try:
                 if ws is None:
-                    log(f"[MOBIFLIGHT] connecting {self.url}")
+                    log_debug(f"[MOBIFLIGHT] connecting {self.url}")
                     ws = await websockets.connect(self.url)
                     log("[MOBIFLIGHT] connected")
 
@@ -1007,7 +1069,7 @@ class MobiFlightSender:
                 log_debug("[MOBIFLIGHT] display frame sent")
 
             except Exception as e:
-                log(f"[MOBIFLIGHT] error: {repr(e)}")
+                log_debug(f"[MOBIFLIGHT] error: {repr(e)}")
                 try:
                     if ws:
                         await ws.close()
@@ -1704,7 +1766,7 @@ def main():
         if code is not None:
             bp_to_code[bp] = code
 
-    log(f"[MAP] resolvable to PSX codes: {len(bp_to_code)}")
+    log_debug(f"[MAP] resolvable to PSX codes: {len(bp_to_code)}")
     # Use all mapped HID buttons, including BRT+/BRT- which have no PSX code
     mapped_bps = set(mapping.keys())
 
@@ -1741,7 +1803,7 @@ def main():
     psx = PsxSender(psx_host, psx_port, mobiflight, pfp7_leds, MIN_SEND_INTERVAL)
     psx.start()
 
-    log("[RUN] HID keys -> active PSX CDU, active PSX CDU screen -> MobiFlight, active PSX CDU lights -> PFP7 LEDs.")
+    log_debug("[RUN] HID keys -> active PSX CDU, active PSX CDU screen -> MobiFlight, active PSX CDU lights -> PFP7 LEDs.")
     log_highlight("[RUN] Press CTRL+C to quit.")
     log_highlight("[CONFIG] Scratchpad commands: CDU-L = Left, CDU-C = Center, CDU-R = Right")
     log_highlight("[CONFIG] Scratchpad commands: CDU-ATC = original ATC key, CDU-ALTN = ATC key opens ALTN page")

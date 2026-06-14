@@ -5,7 +5,7 @@ A Python bridge that connects the WinCTRL PFP7 CDU to the Aerowinx PSX Boeing 74
 The bridge provides:
 
 * PFP7 CDU keyboard input to PSX
-* PSX CDU display output to the Winwing/MobiFlight LCD
+* PSX CDU display output to the WINCTRL/MobiFlight LCD
 * PSX CDU screen blanking support
 * PSX CDU annunciator support
 * Automatic Left, Center and Right CDU switching
@@ -13,7 +13,10 @@ The bridge provides:
 * Automatic LCD / CRT CDU detection
 * Per-character LCD color support
 * Automatic MobiFlight detection and startup
+* Configurable WINCTRL PID / DID device selection
 * Configurable ATC / ALTN key behavior
+* Comment-preserving INI updates
+* Quiet default logging with extended `--debug` diagnostics
 
 ---
 
@@ -80,12 +83,12 @@ Holding these keys currently has no special behaviour within the bridge.
 
 ## ATC / ALTN Key Configuration
 
-The WINCTRL PFP7 has a ALTN key where the PFP4 (B747) FMC has an ATC key.
+The WINCTRL PFP7 has an ALTN key where the PFP4 (B747) FMC has an ATC key.
 The ATC key behavior can be configured in:
 
 ```ini
 [FMC]
-ATC_KEY=ALTN
+atc_key = ALTN
 ```
 
 Available options:
@@ -254,29 +257,181 @@ This bridge requires:
 
 * MobiFlight Connector v11.1.0 or newer
 
-If the required Winwing interface is unavailable, the bridge will display an advisory message suggesting an update or reinstall of MobiFlight Connector.
+If the required WINCTRL interface is unavailable, the bridge will display an advisory message suggesting an update or reinstall of MobiFlight Connector.
 
 ---
 
 ## Configuration
 
-Example:
+Example default configuration:
 
 ```ini
+# ------------------------------------------------------------
+# PSX PFP7 Bridge configuration
+# ------------------------------------------------------------
+
 [PSX]
-HOST=127.0.0.1
-PORT=10747
+# Aerowinx PSX TCP server
+host = 127.0.0.1
+port = 10747
+
+
+# ------------------------------------------------------------
+# WINCTRL CDU device identification
+#
+# VID is hardcoded in the bridge as 0x4098.
+#
+# PID = USB Product ID.
+# DID = WINCTRL Destination ID used for LED/backlight messages.
+#
+# The bridge uses PID to find the CDU hardware and to initialize
+# the MobiFlight WINCTRL sender.
+#
+# DID is used by the MobiFlight DLL when sending LED and
+# backlight commands to the device.
+#
+# +-----------+--------+--------+
+# | Device    | PID    | DID    |
+# +-----------+--------+--------+
+# | PFP3N CPT | BB35   | 31BB   |
+# | PFP3N OBS | BB39   | 31BB   |
+# | PFP3N FO  | BB3D   | 31BB   |
+# +-----------+--------+--------+
+# | MCDU CPT  | BB36   | 32BB   |
+# | MCDU OBS  | BB3A   | 32BB   |
+# | MCDU FO   | BB3E   | 32BB   |
+# +-----------+--------+--------+
+# | PFP7 CPT  | BB37   | 33BB   |
+# | PFP7 OBS  | BB3B   | 33BB   |
+# | PFP7 FO   | BB3F   | 33BB   |
+# +-----------+--------+--------+
+# | PFP4 CPT  | BB38   | 34BB   |
+# | PFP4 OBS  | BB3C   | 34BB   |
+# | PFP4 FO   | BB40   | 34BB   |
+# +-----------+--------+--------+
+#
+# Example:
+# PFP7 Captain -> PID = BB37, DID = 33BB
+# PFP4 Captain -> PID = BB38, DID = 34BB
+# ------------------------------------------------------------
 
 [FMC]
-VID=0x4098
-PID=0xBB37
-ATC_KEY=ALTN
+pid = BB37
+did = 33BB
+
+
+# ------------------------------------------------------------
+# ATC key behavior
+#
+# The PFP7 hardware key is labeled "ALTN".
+#
+# ATC  = sends the original PSX ATC key.
+# ALTN = the ALTN key opens the ALTN page by sending
+#        FMC COMM + LSK2L automatically.
+#
+# This setting is only used when a Next Generation FMC is active.
+# When a Legacy FMC is active, the bridge automatically forces
+# the original ATC key regardless of this setting.
+#
+# Scratchpad commands:
+# CDU-ATC  = switch to ATC mode and save to ini
+# CDU-ALTN = switch to ALTN mode and save to ini
+# ------------------------------------------------------------
+
+atc_key = ATC
+
+
+# ------------------------------------------------------------
+# MobiFlight Connector
+#
+# Optional fallback path to MobiFlight Connector.
+# The bridge first tries to find MobiFlight via the Windows registry.
+#
+# Usually installed in:
+# C:\Users\<username>\AppData\Local\MobiFlight\MobiFlight Connector
+# ------------------------------------------------------------
 
 [MOBIFLIGHT]
-PATH=C:\Users\<username>\AppData\Local\MobiFlight\MobiFlight Connector
+path = C:\Users\<username>\AppData\Local\MobiFlight\MobiFlight Connector
 ```
 
 Normally the MobiFlight path does not need to be configured because it is detected automatically.
+
+### WINCTRL Device Selection
+
+The WINCTRL USB Vendor ID is fixed in the bridge:
+
+```text
+VID = 0x4098
+```
+
+The Product ID and Destination ID are read from `psx_pfp7.ini`:
+
+```ini
+[FMC]
+pid = BB37
+did = 33BB
+```
+
+`pid` is used for both HID device detection and the MobiFlight WINCTRL sender initialization.
+
+`did` is used for LED and backlight messages.
+
+The `pid` value may be written with or without `0x`:
+
+```ini
+pid = BB37
+```
+
+or:
+
+```ini
+pid = 0xBB37
+```
+
+Both are interpreted as hexadecimal values.
+
+### Comment-Preserving INI Updates
+
+When the scratchpad commands `CDU-ATC` or `CDU-ALTN` are used, the bridge updates only the `atc_key` line in `psx_pfp7.ini`.
+
+The INI file is no longer rewritten by `configparser`, so comments and layout are preserved.
+
+
+---
+
+## Logging
+
+By default, startup output is intentionally kept quiet.
+
+Normal mode shows only the most useful status messages, such as:
+
+* bridge startup
+* detected MobiFlight version
+* PSX connected
+* MobiFlight connected
+* scratchpad command hints
+* important errors and warnings
+* `ATC_KEY` save confirmations
+
+Detailed diagnostics are available with:
+
+```bash
+python psx_pfp7.py --debug
+```
+
+Debug mode shows extra information such as:
+
+* MobiFlight registry / INI path detection
+* PSX host and port
+* selected PID and DID
+* DLL path
+* keyboard mapping information
+* websocket reconnect attempts
+* display frame traffic
+* LED and brightness updates
+
+MobiFlight websocket reconnect messages during startup are hidden in normal mode because they can occur while MobiFlight Connector is still starting.
 
 ---
 
@@ -307,6 +462,28 @@ Press CTRL+C to terminate the bridge.
 ---
 
 ## Version History
+
+### v1.03
+
+* Reduced normal startup log output
+* Moved routine configuration, mapping, brightness and reconnect diagnostics to `--debug`
+* Hid MobiFlight websocket reconnect messages during MobiFlight startup in normal mode
+* Kept important connection, error, warning and INI-save messages visible
+
+### v1.02
+
+* Added comment-preserving INI updates
+* `CDU-ATC` and `CDU-ALTN` now update only the `atc_key` line
+* Existing comments and layout in `psx_pfp7.ini` are preserved when saving ATC/ALTN mode
+
+### v1.01a
+
+* Added configurable WINCTRL PID from `psx_pfp7.ini`
+* `PID` is used for HID detection and MobiFlight WINCTRL sender initialization
+* Added configurable WINCTRL DID from `psx_pfp7.ini`
+* `DID` is used for LED and backlight destination messages
+* Hardcoded WINCTRL Vendor ID remains fixed at `0x4098`
+* Added support for PFP7/PFP4/PFP3N/MCDU PID/DID selection through the INI
 
 ### v1.01
 

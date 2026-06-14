@@ -16,6 +16,8 @@ The bridge provides:
 * Configurable WINCTRL PID / DID device selection
 * Configurable ATC / ALTN key behavior
 * Comment-preserving INI updates
+* PyInstaller EXE support with INI next to the EXE
+* Clean WINCTRL HID not-found error handling
 * Quiet default logging with extended `--debug` diagnostics
 
 ---
@@ -391,6 +393,22 @@ pid = 0xBB37
 
 Both are interpreted as hexadecimal values.
 
+### WINCTRL CDU Not Found
+
+If the configured CDU is not found, the bridge now shows a clean error message instead of a Python/PyInstaller traceback.
+
+Example:
+
+```text
+[ERROR] WINCTRL CDU not found.
+[ERROR] Expected VID=4098 PID=BB38
+
+[ERROR] Check the [FMC] pid setting in psx_pfp7.ini.
+[ERROR] Also check that the CDU is connected and visible in Windows.
+
+Press ENTER to exit...
+```
+
 ### Comment-Preserving INI Updates
 
 When the scratchpad commands `CDU-ATC` or `CDU-ALTN` are used, the bridge updates only the `atc_key` line in `psx_pfp7.ini`.
@@ -443,6 +461,15 @@ Run:
 python psx_pfp7.py
 ```
 
+When using a PyInstaller-built EXE, place `psx_pfp7.ini` in the same folder as the EXE:
+
+```text
+psx_pfp7.exe
+psx_pfp7.ini
+```
+
+The MobiFlight DLL does not need to be placed next to the EXE. It remains in the original MobiFlight installation folder and is located through the Windows registry or the `[MOBIFLIGHT] path` fallback in the INI.
+
 Enable diagnostic logging when needed:
 
 ```bash
@@ -462,6 +489,21 @@ Press CTRL+C to terminate the bridge.
 ---
 
 ## Version History
+
+### v1.05
+
+* Added clean WINCTRL CDU not-found error handling
+* Replaced the unhandled HID `RuntimeError` with a user-friendly error message
+* Prevents PyInstaller from showing a traceback when the configured CDU PID is wrong or the CDU is not connected
+* Shows the expected VID/PID and advises checking the `[FMC] pid` setting and USB connection
+
+### v1.04
+
+* Added PyInstaller EXE path handling
+* When running as an EXE, `psx_pfp7.ini` is read from the same folder as the EXE
+* When running as a normal Python script, `psx_pfp7.ini` is read from the script folder
+* MobiFlight DLL loading still uses the original MobiFlight installation path via registry or `[MOBIFLIGHT] path`
+* The MobiFlight DLL does not need to be copied next to the EXE
 
 ### v1.03
 

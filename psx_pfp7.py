@@ -18,8 +18,31 @@ try:
 except ImportError:
     winreg = None
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-os.add_dll_directory(SCRIPT_DIR)
+def get_app_dir():
+    """Return the folder where psx_pfp7.ini should be read from.
+
+    Normal Python:
+        folder of this .py file
+
+    PyInstaller EXE:
+        folder of the .exe file
+    """
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+SCRIPT_DIR = get_app_dir()
+
+# Keep this safe for normal Python and PyInstaller.
+# MobiFlightWwFcu.dll is still loaded later from the real MobiFlight
+# installation path detected via registry or [MOBIFLIGHT] path in the INI.
+if os.name == "nt":
+    try:
+        os.add_dll_directory(SCRIPT_DIR)
+    except Exception:
+        pass
 
 import hid
 import websockets
@@ -32,7 +55,7 @@ from System import Byte, Array, Int32
 # Version / debug
 # ============================================================
 
-VERSION = "1.03"
+VERSION = "1.05"
 DEBUG = "--debug" in [arg.lower() for arg in sys.argv[1:]]
 
 
@@ -1772,7 +1795,16 @@ def main():
 
     devs = hid.enumerate(VID, PID)
     if not devs:
-        raise RuntimeError(f"CDU HID not found VID={hex(VID)} PID={hex(PID)}")
+        log("")
+        log("[ERROR] WINCTRL CDU not found.")
+        log(f"[ERROR] Expected VID={VID:04X} PID={PID:04X}")
+        log("")
+        log("[ERROR] Check the [FMC] pid setting in psx_pfp7.ini.")
+        log("[ERROR] Also check that the CDU is connected and visible in Windows.")
+        log("")
+
+        input("Press ENTER to exit...")
+        return
 
     d = devs[0]
     # Debug: selected HID device details
